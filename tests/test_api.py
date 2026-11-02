@@ -40,6 +40,46 @@ def test_search_removes_duplicate_and_invalid_urls():
     assert isinstance(body["response_time"], (float, int))
 
 
+def test_dedup_preserves_meaningful_url_differences():
+    def handler(req):
+        return httpx.Response(200, json={"results": [
+            {"title": "original", "url": "https://EXAMPLE.com:443"},
+            {"title": "same homepage", "url": "https://example.com/#fragment"},
+            {"title": "first query", "url": "https://example.com/?id=1"},
+            {"title": "second query", "url": "https://example.com/?id=2"},
+            {"title": "different case path", "url": "https://example.com/Article"},
+            {"title": "different case path 2", "url": "https://example.com/article"},
+            {"url": "https://@example.com/"},
+            {"url": "https://bad host.example/"},
+        ]})
+    results = request({"query": "test", "max_results": 10}, handler).json()["results"]
+    assert [r["title"] for r in results] == [
+        "original", "first query", "second query", "different case path", "different case path 2"
+    ]
+    assert results[0]["url"] == "https://EXAMPLE.com:443"
+
+
+def test_diversity_uses_nearby_candidates_without_losing_results():
+    def handler(req):
+        return httpx.Response(200, json={"results": [
+            {"title": "a1", "url": "https://a.example/1"},
+            {"title": "a2", "url": "https://www.a.example/2"},
+            {"title": "a3", "url": "https://a.example/3"},
+            {"title": "a4", "url": "https://a.example/4"},
+            {"title": "b1", "url": "https://b.example/1"},
+            {"title": "a5", "url": "https://a.example/5"},
+        ]})
+    results = request({"query": "test", "max_results": 5}, handler).json()["results"]
+    assert [r["title"] for r in results] == ["a1", "a2", "b1", "a3", "a4"]
+
+
+def test_diversity_does_not_pull_distant_or_discard_single_source_results():
+    items = [{"title": str(i), "url": f"https://a.example/{i}"} for i in range(6)]
+    items.append({"title": "distant", "url": "https://b.example/"})
+    assert [r["title"] for r in main.select_results(items, 3)] == ["0", "1", "2"]
+    assert len(main.select_results(items[:5], 5)) == 5
+
+
 def test_raw_content_and_failure_are_distinguished(monkeypatch):
     monkeypatch.setattr(main, "CRAWL4AI_API_TOKEN", "test-token")
     def handler(req):

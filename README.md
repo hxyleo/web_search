@@ -18,6 +18,8 @@
 
 首次运行会生成 `.crawl4ai.env` 和 `.searxng.env`，并在本地缺少镜像时构建或拉取镜像，然后启动服务。之后启动默认使用已有镜像；如果修改了 API 代码或 Dockerfile，需要执行 `./start.sh --build` 重新构建。已有密钥文件会保留。密钥文件已被 `.gitignore` 和 `.dockerignore` 排除，不要上传或分享其中的内容。API 仅监听本机 `127.0.0.1:8000`；SearXNG 和 Crawl4AI 只在 Compose 网络中供 API 调用。
 
+API 当前没有访问认证，仅适合本机可信使用；不要直接开放到公网。
+
 检查服务：
 
 ```bash
@@ -46,6 +48,8 @@ curl -X POST http://127.0.0.1:8000/search \
 ```
 
 支持的参数是 `query`、`max_results`（1–10）和 `include_raw_content`。返回格式参考 Tavily Search 的常用字段，但并不支持 Tavily 所有参数或接口。`content` 是搜索摘要，`raw_content` 是按需抓取的 Markdown；抓取失败时 `raw_content` 为 `null`，并在该条结果中给出 `crawl_error`。SearXNG 的部分上游搜索引擎不可用时，响应可能包含 `warning`。不支持的请求字段会返回 422，避免误以为已生效。
+
+搜索结果会先按 URL 做保守去重，再在相近排名中适度分散来源；这不是模型重排序。需要更深入的语义相关性排序时，可以在后续接入 reranker。
 
 ## 管理
 
