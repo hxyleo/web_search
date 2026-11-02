@@ -1,0 +1,36 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - 360search
+      - yahoo
+      - google cse
+
+general:
+  debug: false
+  instance_name: "Web Search"
+
+search:
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 8.0
+
+server:
+  # Compose supplies a generated secret via SEARXNG_SECRET.
+  secret_key: "set-through-environment"
+  # SearXNG is only reachable from the private Compose network.
+  limiter: false
+  image_proxy: false
+
+# These engines are reachable in the current deployment; availability can
+# change with network location and upstream rate limits.
+engines:
+  - name: 360search
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: google cse
+    disabled: false

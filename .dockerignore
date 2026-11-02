@@ -1,0 +1,8 @@
+.git
+.crawl4ai.env
+.searxng.env
+.env
+.llm.env
+.venv
+__pycache__
+.pytest_cache

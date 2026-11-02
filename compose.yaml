@@ -1,0 +1,31 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .crawl4ai.env
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      CRAWL4AI_URL: http://crawl4ai:11235
+    depends_on:
+      - searxng
+      - crawl4ai
+
+  searxng:
+    image: ghcr.io/searxng/searxng:2026.10.29-c15647b5a
+    restart: unless-stopped
+    env_file:
+      - .searxng.env
+    environment:
+      SEARXNG_SETTINGS_PATH: /config/settings.yml
+    volumes:
+      - ./searxng/settings.yml:/config/settings.yml:ro
+
+  crawl4ai:
+    image: unclecode/crawl4ai:0.9.5
+    restart: unless-stopped
+    shm_size: 1gb
+    env_file:
+      - .crawl4ai.env
