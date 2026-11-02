@@ -4,8 +4,15 @@ import re
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints, field_validator
-
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StringConstraints,
+    field_validator,
+)
 
 _LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -27,7 +34,11 @@ def domain_matches(url: str, domain: str) -> bool:
     """Match a host or its subdomain on a label boundary, never a substring."""
     try:
         parsed = urlsplit(url)
-        if parsed.scheme.lower() not in ("http", "https") or parsed.username is not None or parsed.password is not None:
+        if (
+            parsed.scheme.lower() not in ("http", "https")
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
             return False
         host = normalize_domain(parsed.hostname or "")
         suffix = normalize_domain(domain)
@@ -75,7 +86,18 @@ class SearchRequest(BaseModel):
     auto_parameters: StrictBool = False
     exact_match: StrictBool = False
 
-    @field_validator("include_answer", "include_images", "include_image_descriptions", "include_favicon", "include_usage", "include_published_date", "filter_by_published_date", "filter_by_language", "auto_parameters", "exact_match")
+    @field_validator(
+        "include_answer",
+        "include_images",
+        "include_image_descriptions",
+        "include_favicon",
+        "include_usage",
+        "include_published_date",
+        "filter_by_published_date",
+        "filter_by_language",
+        "auto_parameters",
+        "exact_match",
+    )
     @classmethod
     def reject_unsupported_features(cls, value: bool) -> bool:
         if value:
@@ -94,8 +116,3 @@ class SearchRequest(BaseModel):
         if self.time_range is not None:
             params["time_range"] = self.time_range
         return params
-
-    def cache_key(self) -> tuple:
-        """Include every supported option that changes the returned response."""
-        return (self.query, self.max_results, bool(self.include_raw_content), self.language,
-                self.time_range, tuple(self.include_domains), tuple(self.exclude_domains))

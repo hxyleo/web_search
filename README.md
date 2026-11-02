@@ -97,6 +97,26 @@ Clash Verge 或 Mihomo 的 Fake-IP 模式可能将公共域名解析为 `198.18.
 
 DNS 服务默认使用 Docker 子网 `172.30.253.0/24`、地址 `172.30.253.53`。如果和已有网络冲突，可在项目目录的 `.env` 文件中同时设置 `CRAWLER_DNS_SUBNET` 与 `CRAWLER_DNS_IP`，确保后者属于前者，然后重启服务。该文件已被 Git 忽略。DNS 服务不向宿主机映射端口；其容器健康检查只验证本地 DNS 端口正在监听，不检查公网 DNS 是否可用。如果无法连接上述公共 DNS 服务，网页抓取可能失败。
 
+## 开发与测试
+
+本地开发建议使用 Python 3.12 和独立虚拟环境。开发依赖单独维护，不会安装进运行镜像：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+```
+
+运行代码检查和自动化测试：
+
+```bash
+ruff check .
+ruff format --check .
+python -m pytest -q
+```
+
+主要代码位于 `app/`：`main.py` 负责 API 和流程编排；`search_params.py`、`results.py` 分别负责搜索参数和结果筛选；`cache.py`、`rate_limit.py` 分别负责缓存和限流；`doh_dns.py` 是抓取专用 DNS 服务。测试位于 `tests/`。
+
 ## 后续
 
 内网大模型尚未接入。后续可让 Agent 先调用此搜索接口，再由模型根据返回的来源和正文生成答案。

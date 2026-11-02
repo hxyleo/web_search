@@ -2,6 +2,7 @@
 
 This does not govern redirects or subresources loaded by the browser.
 """
+
 import asyncio
 import time
 from collections import OrderedDict
@@ -21,7 +22,7 @@ class _HostState:
 
 
 class HostRateLimiter:
-    def __init__(self, interval: float = 0.5, max_hosts: int = 1024):
+    def __init__(self, interval: float = 0.5, max_hosts: int = 1024) -> None:
         if interval < 0 or max_hosts < 1:
             raise ValueError("interval must be non-negative and max_hosts must be positive")
         self.interval = interval
@@ -37,7 +38,8 @@ class HostRateLimiter:
         still-relevant timestamp and accidentally allowing an early request.
         """
         try:
-            host = (urlsplit(url).hostname or "").rstrip(".").encode("idna").decode("ascii").lower()
+            hostname = (urlsplit(url).hostname or "").rstrip(".")
+            host = hostname.encode("idna").decode("ascii").lower()
         except (ValueError, UnicodeError) as exc:
             raise ValueError("invalid crawl URL host") from exc
         if not host:
@@ -49,8 +51,12 @@ class HostRateLimiter:
                 now = time.monotonic()
                 if len(self._hosts) >= self.max_hosts:
                     for old_host, old_state in self._hosts.items():
-                        if not old_state.users and (old_state.last_started is None or
-                                                    now - old_state.last_started >= self.interval):
+                        inactive = not old_state.users
+                        interval_elapsed = (
+                            old_state.last_started is None
+                            or now - old_state.last_started >= self.interval
+                        )
+                        if inactive and interval_elapsed:
                             del self._hosts[old_host]
                             break
                     else:

@@ -1,21 +1,26 @@
 """Bounded, process-local async cache with coalescing for identical requests."""
+
 import asyncio
 import copy
 import json
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 
 class CacheBusy(Exception):
     """The bounded work queue is full."""
 
 
-class SearchCache:
-    def __init__(self, ttl: float = 600, max_entries: int = 256,
-                 max_bytes: int = 16 * 1024 * 1024, max_entry_bytes: int = 1024 * 1024,
-                 max_inflight: int = 64):
+class AsyncTTLCache:
+    def __init__(
+        self,
+        ttl: float = 600,
+        max_entries: int = 256,
+        max_bytes: int = 16 * 1024 * 1024,
+        max_entry_bytes: int = 1024 * 1024,
+        max_inflight: int = 64,
+    ) -> None:
         self.ttl = ttl
         self.max_entries = max_entries
         self.max_bytes = max_bytes
@@ -29,7 +34,9 @@ class SearchCache:
         _, size, _ = self.entries.pop(key)
         self.size -= size
 
-    async def get_or_create(self, key: tuple, create: Callable[[], Awaitable[tuple[dict, bool]]]) -> dict:
+    async def get_or_create(
+        self, key: tuple, create: Callable[[], Awaitable[tuple[dict, bool]]]
+    ) -> dict:
         # The section before the first await runs atomically on the event loop.
         entry = self.entries.get(key)
         if entry:
@@ -54,10 +61,16 @@ class SearchCache:
             if cacheable:
                 size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
                 if self.ttl > 0 and size <= self.max_entry_bytes and size <= self.max_bytes:
-                    while self.entries and (len(self.entries) >= self.max_entries or self.size + size > self.max_bytes):
+                    while self.entries and (
+                        len(self.entries) >= self.max_entries or self.size + size > self.max_bytes
+                    ):
                         self._remove(next(iter(self.entries)))
                     if self.max_entries > 0:
-                        self.entries[key] = (time.monotonic() + self.ttl, size, copy.deepcopy(value))
+                        self.entries[key] = (
+                            time.monotonic() + self.ttl,
+                            size,
+                            copy.deepcopy(value),
+                        )
                         self.size += size
             return value
         finally:
