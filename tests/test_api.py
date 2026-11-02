@@ -1,12 +1,21 @@
 import asyncio
 
 import httpx
+import pytest
 
 from app import main
 
 
+@pytest.fixture(autouse=True)
+def disable_host_delay_for_api_tests(monkeypatch):
+    # Host pacing is covered separately; keep API tests deterministic across loops.
+    monkeypatch.setattr(main, "host_limiter", main.HostRateLimiter(interval=0))
+
+
 def request(payload, upstream_handler):
     async def run():
+        main.search_cache = main.SearchCache()
+        main.crawl_cache = main.SearchCache()
         upstream = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
         async def override_client():
             return upstream
@@ -135,3 +144,192 @@ def test_search_failure_and_partial_engine_warning():
     def partial_with_results(req):
         return httpx.Response(200, json={"results": [{"url": "https://example.com"}], "unresponsive_engines": [["x", "failed"]]})
     assert "Some SearXNG" in request({"query": "ok"}, partial_with_results).json()["warning"]
+
+
+def test_cache_expiry_and_request_parameters(monkeypatch):
+    async def run():
+        now = [100.0]
+        monkeypatch.setattr("app.cache.time.monotonic", lambda: now[0])
+        main.search_cache = main.SearchCache(ttl=600)
+        main.crawl_cache = main.SearchCache(ttl=600)
+        calls = []
+        def handler(req):
+            calls.append(req.url.path)
+            if req.url.path == "/crawl":
+                return httpx.Response(200, json={"results": [{"success": True, "markdown": "# text"}]})
+            return httpx.Response(200, json={"results": [{"url": "https://example.com"}, {"url": "https://other.example.com"}]})
+        monkeypatch.setattr(main, "CRAWL4AI_API_TOKEN", "test-token")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            payload = main.SearchRequest(query="one")
+            first = await main.search(payload, upstream)
+            first["results"][0]["title"] = "mutated"
+            assert (await main.search(payload, upstream))["results"][0]["title"] == ""
+            assert calls == ["/search"]
+            assert len((await main.search(main.SearchRequest(query="one", max_results=2), upstream))["results"]) == 2
+            await main.search(main.SearchRequest(query="one", include_raw_content=True), upstream)
+            assert calls == ["/search", "/crawl", "/crawl"]
+            await main.search(main.SearchRequest(query="different", max_results=1, include_raw_content=True), upstream)
+            assert calls == ["/search", "/crawl", "/crawl", "/search"]
+            now[0] += 601
+            await main.search(payload, upstream)
+            assert calls.count("/search") == 3
+    asyncio.run(run())
+
+
+def test_cache_coalesces_concurrent_requests():
+    async def run():
+        main.search_cache = main.SearchCache()
+        main.crawl_cache = main.SearchCache()
+        calls = []
+        async def handler(req):
+            calls.append(req.url.path)
+            await asyncio.sleep(0.02)
+            if req.url.path == "/crawl":
+                return httpx.Response(200, json={"results": [{"success": True, "markdown": "# text"}]})
+            return httpx.Response(200, json={"results": [{"url": "https://example.com"}]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            responses = await asyncio.gather(*(main.search(main.SearchRequest(query="same"), upstream) for _ in range(5)))
+            assert calls == ["/search"]
+            assert all(r["results"] for r in responses)
+            main.CRAWL4AI_API_TOKEN, old_token = "test-token", main.CRAWL4AI_API_TOKEN
+            try:
+                await asyncio.gather(*(main.search(main.SearchRequest(query=f"q{i}", include_raw_content=True), upstream) for i in range(5)))
+                assert calls.count("/crawl") == 1
+            finally:
+                main.CRAWL4AI_API_TOKEN = old_token
+    asyncio.run(run())
+
+
+def test_cache_does_not_store_upstream_or_crawl_failures(monkeypatch):
+    async def run():
+        main.search_cache = main.SearchCache()
+        main.crawl_cache = main.SearchCache()
+        calls = []
+        monkeypatch.setattr(main, "CRAWL4AI_API_TOKEN", "test-token")
+        def handler(req):
+            calls.append(req.url.path)
+            if req.url.path == "/crawl":
+                return httpx.Response(500)
+            if req.url.params["q"] == "failure":
+                return httpx.Response(200, json={"results": [], "unresponsive_engines": [["x", "failed"]]})
+            return httpx.Response(200, json={"results": [{"url": "https://example.com"}]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            for _ in range(2):
+                await main.search(main.SearchRequest(query="failure"), upstream)
+                await main.search(main.SearchRequest(query="crawl", include_raw_content=True), upstream)
+            assert calls.count("/search") == 3
+            assert calls.count("/crawl") == 2
+    asyncio.run(run())
+
+
+def test_search_passes_filters_and_filters_before_limit():
+    def handler(req):
+        assert req.url.params["language"] == "zh-CN"
+        assert req.url.params["time_range"] == "month"
+        return httpx.Response(200, json={"results": [
+            {"url": "https://unrelated.example/a"},
+            {"url": "https://private.example.com/b"},
+            {"url": "https://docs.example.com/c"},
+        ]})
+    response = request({"query": "test", "max_results": 1, "language": "zh-CN",
+                        "time_range": "month", "include_domains": ["example.com"],
+                        "exclude_domains": ["private.example.com"]}, handler)
+    assert response.status_code == 200
+    assert [r["url"] for r in response.json()["results"]] == ["https://docs.example.com/c"]
+
+
+def test_search_cache_distinguishes_upstream_filters():
+    async def run():
+        main.search_cache = main.SearchCache()
+        calls = []
+        def handler(req):
+            calls.append(dict(req.url.params))
+            return httpx.Response(200, json={"results": [{"url": "https://example.com"}]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            for options in ({}, {"language": "en"}, {"time_range": "day"}, {"language": "en"}):
+                await main.search(main.SearchRequest(query="test", **options), upstream)
+        assert len(calls) == 3
+    asyncio.run(run())
+
+
+def test_crawl_budget_keeps_partial_results(monkeypatch):
+    async def run():
+        main.search_cache = main.SearchCache()
+        main.crawl_cache = main.SearchCache()
+        monkeypatch.setattr(main, "CRAWL4AI_API_TOKEN", "test-token")
+        monkeypatch.setattr(main, "CRAWL_BUDGET_SECONDS", 0.03)
+        async def handler(req):
+            if req.url.path == "/search":
+                return httpx.Response(200, json={"results": [
+                    {"url": "https://fast.example"}, {"url": "https://slow.example"}]})
+            if b"slow.example" in req.content:
+                await asyncio.sleep(0.15)
+            return httpx.Response(200, json={"results": [{"success": True, "markdown": "# body"}]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            response = await main.search(main.SearchRequest(query="test", include_raw_content=True), upstream)
+            assert response["results"][0]["raw_content"] == "# body"
+            assert response["results"][1]["raw_content"] is None
+            assert "time limit" in response["results"][1]["crawl_error"]
+            await asyncio.sleep(0.16)  # let the shared in-flight task finish cleanly
+    asyncio.run(run())
+
+
+def test_crawl_queue_wait_has_own_deadline(monkeypatch):
+    async def run():
+        main.crawl_cache = main.SearchCache()
+        monkeypatch.setattr(main, "crawl_slots", asyncio.Semaphore(0))
+        monkeypatch.setattr(main, "CRAWL4AI_API_TOKEN", "test-token")
+        monkeypatch.setattr(main, "CRAWL_WORK_BUDGET_SECONDS", 0.02)
+        result = {"url": "https://example.com", "raw_content": None}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(500))) as upstream:
+            await main.crawl_result(upstream, result)
+        assert "timed out" in result["crawl_error"]
+        assert not main.crawl_cache.inflight
+        assert not main.crawl_cache.entries
+    asyncio.run(run())
+
+
+def test_crawl_content_limits_are_explicit(monkeypatch):
+    async def run():
+        main.crawl_cache = main.SearchCache()
+        monkeypatch.setattr(main, "crawl_slots", asyncio.Semaphore(3))
+        monkeypatch.setattr(main, "CRAWL4AI_API_TOKEN", "test-token")
+        monkeypatch.setattr(main, "MAX_RAW_CONTENT_CHARS", 4)
+        def handler(req):
+            return httpx.Response(200, json={"results": [{"success": True, "markdown": "abcdefgh"}]})
+        result = {"url": "https://example.com", "raw_content": None}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            await main.crawl_result(upstream, result)
+        assert result["raw_content"] == "abcd"
+        assert result["raw_content_truncated"] is True
+        main.crawl_cache = main.SearchCache()
+        monkeypatch.setattr(main, "MAX_CRAWL_RESPONSE_BYTES", 10)
+        result = {"url": "https://example.com", "raw_content": None}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            await main.crawl_result(upstream, result)
+        assert "size limit" in result["crawl_error"]
+        assert not main.crawl_cache.entries
+    asyncio.run(run())
+
+
+def test_cache_inflight_is_bounded_but_shares_existing_work():
+    async def run():
+        from app.cache import CacheBusy
+        cache = main.SearchCache(max_inflight=1)
+        ready = asyncio.Event()
+        async def create():
+            await ready.wait()
+            return {"value": 1}, True
+        first = asyncio.create_task(cache.get_or_create(("same",), create))
+        await asyncio.sleep(0)
+        shared = asyncio.create_task(cache.get_or_create(("same",), create))
+        await asyncio.sleep(0)
+        try:
+            await cache.get_or_create(("other",), create)
+        except CacheBusy:
+            pass
+        else:
+            raise AssertionError("a distinct request should be rejected when the queue is full")
+        ready.set()
+        assert await first == await shared == {"value": 1}
+    asyncio.run(run())

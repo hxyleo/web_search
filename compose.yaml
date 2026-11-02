@@ -1,5 +1,6 @@
 services:
   api:
+    image: web-search-api:local
     build: .
     restart: unless-stopped
     ports:
@@ -29,3 +30,39 @@ services:
     shm_size: 1gb
     env_file:
       - .crawl4ai.env
+    dns:
+      - "${CRAWLER_DNS_IP:-172.30.253.53}"
+    depends_on:
+      crawl-dns:
+        condition: service_healthy
+    networks:
+      - default
+      - crawl-dns
+
+  crawl-dns:
+    image: web-search-api:local
+    build: .
+    command: ["python", "-m", "app.doh_dns"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 53), 2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      crawl-dns:
+        ipv4_address: "${CRAWLER_DNS_IP:-172.30.253.53}"
+
+networks:
+  crawl-dns:
+    ipam:
+      config:
+        - subnet: "${CRAWLER_DNS_SUBNET:-172.30.253.0/24}"
